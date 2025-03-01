@@ -3,6 +3,7 @@
 #include <cstring>
 #include <cfloat>
 #include <ctime>
+#include <intrin.h>
 
 #define FAST_RTREE_IMPLEMENTATION 1
 #include "rtree.h"
@@ -10,18 +11,18 @@ using namespace fast_rtree;
 
 
 template <typename T>
-static double Random()
+static T Random()
 {
     return (T)rand() / ((T)RAND_MAX + 1);
 }
 
-static double* MakeRandomPoints( int N )
+static float* MakeRandomPoints( int N )
 {
-    double* points = (double*)malloc( N * 2 * sizeof(double) );
+    float* points = (float*)malloc( N * 2 * sizeof(float) );
     for( int i = 0; i < N; i++ )
     {
-        points[i*2+0] = Random<double>() * 360.0 - 180.0;
-        points[i*2+1] = Random<double>() * 180.0 - 90.0;
+        points[i*2+0] = Random<float>() * 360.0 - 180.0;
+        points[i*2+1] = Random<float>() * 180.0 - 90.0;
     }
     return points;
 }
@@ -29,7 +30,7 @@ static double* MakeRandomPoints( int N )
 template <typename Callable>
 void Bench( char const* name, int N, Callable&& code )
 {
-    printf( "%-14s ", name );
+    printf( "%-20s ", name );
 
     // TODO Use rdtsc instead
     clock_t begin = clock();
@@ -38,6 +39,7 @@ void Bench( char const* name, int N, Callable&& code )
     }
     clock_t end = clock();
 
+    // FIXME Something's up with the rounding here!
     double elapsed_secs = (double)(end - begin) / CLOCKS_PER_SEC;
     double ns_op = elapsed_secs / (double)N * 1e9;
     int64_t ops_sec = (int64_t)(N / elapsed_secs);
@@ -78,13 +80,14 @@ int main()
 {
     constexpr int N = 1'000'000;
 
-    RTree<int> tree;
-    double* points = MakeRandomPoints( N );
+    // TODO Compare various min/max values!
+    RTree<int, 2, 64, 7> tree;
+    float* points = MakeRandomPoints( N );
 
+    // TODO Compare with a linear arena allocator
     Bench( "insert", N, [&]( int i )
     {
-        double* p = &points[i*2];
-        float point[2] = { (float)p[0], (float)p[1] };
+        float* point = &points[i*2];
 
         tree.Insert( i, point, point );
         assert( tree.count == i+1 );
@@ -94,7 +97,7 @@ int main()
 
     Bench( "search-item", N, [&]( int i )
     {
-        double *p = &points[i*2];
+        float *p = &points[i*2];
         float point[2] = { (float)p[0], (float)p[1] };
 
         IterateItemCtx ctx;

@@ -25,7 +25,7 @@ namespace fast_rtree
     // Returning false stops the iteration
     using Iterator = bool( const float min[], const float max[], const void* itemData, void* userdata );
 
-    // TODO Find a good default for max/min items after some testing
+    // TODO Find a good default for max/min items after some testing. Check benchmark results!
     // TODO Should we make this intrusive instead?
     template <typename ItemData, int Dims = 2, int MaxItems = 10, int MinItems = MaxItems / 2>
     struct RTree
@@ -91,23 +91,10 @@ namespace fast_rtree
         Rect ComputeRectFor( Node const* node );
         void ExpandRect( Rect *rect, Rect const& other );
         bool ContainsRect( Rect const& rect, Rect const& other );
-        // bool Intersects( Rect const& rect, Rect const& other ) const;
+        bool Intersects( Rect const& rect, Rect const& other ) const;
         float RectArea( Rect const& rect );
         float ExpandedRectArea( Rect const& rect, Rect const& other );
         int RectLargestAxis( Rect const& rect );
-
-        __forceinline bool Intersects( Rect const& rect, Rect const& other ) const
-        {
-            // TODO SIMD
-            // TODO Early out?
-            int bits = 0;
-            for( int i = 0; i < Dims; i++ )
-            {
-                bits |= other.min[i] > rect.max[i];
-                bits |= other.max[i] < rect.min[i];
-            }
-            return bits == 0;
-        }
 
     };
 
@@ -532,6 +519,20 @@ namespace fast_rtree
             }
             return true;
         }
+    }
+
+    TemplateDecl
+    inline bool RTreeType::Intersects( Rect const& rect, Rect const& other ) const
+    {
+        // TODO SIMD
+        // TODO Early out?
+        int bits = 0;
+        for( int i = 0; i < Dims; i++ )
+        {
+            bits |= other.min[i] > rect.max[i];
+            bits |= other.max[i] < rect.min[i];
+        }
+        return bits == 0;
     }
 
 
