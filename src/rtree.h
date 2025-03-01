@@ -4,9 +4,9 @@
 
 #include <cstdint>
 
-#ifndef ASSERT
+#ifndef RTREE_ASSERT
 #include <cassert>
-#define ASSERT assert
+#define RTREE_ASSERT assert
 #endif
 
 namespace fast_rtree
@@ -21,6 +21,9 @@ namespace fast_rtree
         Branch,
         Leaf,
     };
+
+    // Returning false stops the iteration
+    using Iterator = bool( const float min[], const float max[], const void* itemData, void* userdata );
 
     // TODO Find a good default for max/min items after some testing
     // TODO Should we make this intrusive instead?
@@ -67,7 +70,8 @@ namespace fast_rtree
         }
 
         // Returns false if failed (out of memory)
-        bool Insert( ItemData const& item, float xMin, float yMin, float xMax, float yMax );
+        bool Insert( ItemData const& item, float* min, float* max );
+        void Search( const float min[], const float max[], Iterator* it, void* userdata ) const;
 
     private:
         // TODO Turn as many of these as possible into free funcs (will probably need to extract Node & Rect from the class)
@@ -77,6 +81,7 @@ namespace fast_rtree
         bool SplitNodeByLargestAxisEdgeSnap( Rect const& rect, Node* node, Node** rightOut );
         bool SplitNode( Rect const& rect, Node* node, Node** rightOut );
         bool InsertNode( Node* node, Rect const& rect, ItemData const& item, bool* split );
+        bool SearchNode( Node const* node, Rect const& rect, Iterator* it, void* userdata ) const;
 
         void MoveItem( Node *from, int index, Node *into );
         void SwapItem( Node* node, int i, int j );
@@ -86,9 +91,24 @@ namespace fast_rtree
         Rect ComputeRectFor( Node const* node );
         void ExpandRect( Rect *rect, Rect const& other );
         bool ContainsRect( Rect const& rect, Rect const& other );
+        // bool Intersects( Rect const& rect, Rect const& other ) const;
         float RectArea( Rect const& rect );
         float ExpandedRectArea( Rect const& rect, Rect const& other );
         int RectLargestAxis( Rect const& rect );
+
+        __forceinline bool Intersects( Rect const& rect, Rect const& other ) const
+        {
+            // TODO SIMD
+            // TODO Early out?
+            int bits = 0;
+            for( int i = 0; i < Dims; i++ )
+            {
+                bits |= other.min[i] > rect.max[i];
+                bits |= other.max[i] < rect.min[i];
+            }
+            return bits == 0;
+        }
+
     };
 
 
@@ -107,6 +127,7 @@ namespace fast_rtree
         return x > y ? x : y;
     }
 
+#define TemplateDecl template <typename ItemData, int Dims, int MaxItems, int MinItems>
 #define RTreeType RTree<ItemData, Dims, MaxItems, MinItems>
 
     template <typename ItemData, int Dims, int MaxItems, int MinItems>
@@ -194,13 +215,11 @@ namespace fast_rtree
 
 
     template <typename ItemData, int Dims, int MaxItems, int MinItems>
-    bool RTreeType::Insert( ItemData const& item, float xMin, float yMin, float xMax, float yMax )
+    bool RTreeType::Insert( ItemData const& item, float* min, float* max )
     {
-        Rect rect =
-        {
-            { xMin, yMin },
-            { xMax, yMax },
-        };
+        Rect rect;
+        memcpy( &rect.min[0], min, Dims * sizeof(float) );
+        memcpy( &rect.max[0], max, Dims * sizeof(float) );
 
         while( true )
         {
@@ -281,7 +300,7 @@ namespace fast_rtree
     template <typename ItemData, int Dims, int MaxItems, int MinItems>
     void RTreeType::MoveItem( Node *from, int index, Node *into )
     {
-        ASSERT( into->count < MaxItems );
+        RTREE_ASSERT( into->count < MaxItems );
 
         into->rects[into->count] = from->rects[index];
         from->rects[index] = from->rects[from->count - 1];
@@ -471,6 +490,50 @@ namespace fast_rtree
 
         return InsertNode( node, rect, item, split );
     }
+
+
+    //// Search
+
+    TemplateDecl
+    void RTreeType::Search( const float min[], const float max[], Iterator* it, void* userdata ) const
+    {
+        Rect rect;
+        memcpy( &rect.min[0], min, sizeof(float) * Dims );
+        memcpy( &rect.max[0], max, sizeof(float) * Dims );
+
+        if( root )
+            SearchNode( root, rect, it, userdata );
+    }
+
+    TemplateDecl
+    bool RTreeType::SearchNode( Node const* node, Rect const& rect, Iterator* it, void* userdata ) const
+    {
+        if( node->kind == Leaf )
+        {
+            for( int i = 0; i < node->count; i++ )
+            {
+                if( Intersects( node->rects[i], rect ) )
+                {
+                    if( !it( node->rects[i].min, node->rects[i].max, &node->items[i], userdata ) )
+                        return false;
+                }
+            }
+            return true;
+        }
+        else
+        {
+            for( int i = 0; i < node->count; i++ )
+            {
+                if( Intersects( node->rects[i], rect ) )
+                {
+                    if( !SearchNode( node->nodes[i], rect, it, userdata ) )
+                        return false;
+                }
+            }
+            return true;
+        }
+    }
+
 
 #undef RTreeType
 

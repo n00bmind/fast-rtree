@@ -8,7 +8,7 @@
 #elif _MSC_VER
     #define TRAP __debugbreak()
 #endif
-#define ASSERT( expr ) ((void)( !(expr) && (__debugbreak(), 0) ))
+#define RTREE_ASSERT( expr ) ((void)( !(expr) && (__debugbreak(), 0) ))
 
 #define FAST_RTREE_IMPLEMENTATION 1
 #include "rtree.h"
@@ -212,8 +212,10 @@ TEST(PredefSet, RTree)
     constexpr int N = sizeof(predef) / (sizeof(double) * 2);
     for (int i = 0; i < N; i++)
     {
-        double *point = &predef[i * 2];
-        tree.Insert( i, point[0], point[1], point[0], point[1] );
+        double *p = &predef[i * 2];
+        float point[2] = { (float)p[0], (float)p[1] };
+
+        tree.Insert( i, point, point );
     }
     EXPECT_TRUE( tree.count == N ) << "Bad count";
 
@@ -228,8 +230,10 @@ TEST(CitiesSet, RTree)
     constexpr int N = sizeof(cities) / (sizeof(double) * 2);
     for (int i = 0; i < N; i++)
     {
-        double *point = &cities[i * 2];
-        tree.Insert( i, point[0], point[1], point[0], point[1] );
+        double *p = &cities[i * 2];
+        float point[2] = { (float)p[0], (float)p[1] };
+
+        tree.Insert( i, point, point );
     }
     EXPECT_TRUE( tree.count == N ) << "Bad count";
 
