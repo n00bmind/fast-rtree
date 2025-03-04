@@ -27,9 +27,11 @@ namespace fast_rtree
 
     // TODO Find a good default for max/min items after some testing. Check benchmark results!
     // TODO Should we make this intrusive instead?
-    template <typename ItemData, int Dims = 2, int MaxItems = 10, int MinItems = MaxItems / 2>
+    template <typename ItemData, int Dims = 2, int MaxItems = 64, int MinItems = MaxItems / 10 + 1>
     struct RTree
     {
+        static constexpr int MaxItemCount = MaxItems;
+        static constexpr int MinItemCount = MinItems;
         static_assert( MinItems > 1 && MinItems <= MaxItems / 2, "Minimum items per node outside valid range" );
 
         struct Rect

@@ -14,7 +14,7 @@ if "%1" == "release" (
     set CFG_FLAGS=%REL_FLAGS%
 )
 
-%CC% /nologo ../src/test.cpp %COMMON_FLAGS% %CFG_FLAGS% /link /incremental:no /debug:full /LTCG
+REM %CC% /nologo ../src/test.cpp %COMMON_FLAGS% %CFG_FLAGS% /link /incremental:no /debug:full /LTCG
 %CC% /nologo ../src/bench.cpp %COMMON_FLAGS% %CFG_FLAGS% /link /incremental:no /debug:full /LTCG
 
 popd
