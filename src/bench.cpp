@@ -11,10 +11,60 @@
 using namespace fast_rtree;
 
 
-template <typename T>
-static T Random()
+struct MemoryArena
 {
-    return (T)rand() / ((T)RAND_MAX + 1);
+    uint8_t* base;
+    size_t used;
+    size_t capacity;
+};
+MemoryArena globalArena = {};
+
+void InitArena( MemoryArena* arena, size_t capacityBytes )
+{
+    RTREE_ASSERT( arena->base == nullptr );
+    arena->base = (uint8_t*)malloc( capacityBytes );
+    arena->used = 0;
+    arena->capacity = capacityBytes;
+}
+
+void ClearArena( MemoryArena* arena )
+{
+    arena->used = 0;
+}
+
+void* ArenaAlloc( MemoryArena* arena, size_t sizeBytes )
+{
+    if( arena->used + sizeBytes < arena->capacity )
+    {
+        void* p = arena->base + arena->used;
+        arena->used += sizeBytes;
+        return p;
+    }
+    else
+    {
+        RTREE_ASSERT( arena->used + sizeBytes < arena->capacity );
+        return nullptr;
+    }
+}
+
+void* RTreeAlloc( size_t sizeBytes )
+{
+    return ArenaAlloc( &globalArena, sizeBytes );
+}
+
+void ArenaFree( MemoryArena* arena, void* p )
+{
+    // no-op
+}
+
+void RTreeFree( void* p )
+{
+    ArenaFree( &globalArena, p );
+}
+
+static float RandomFloat()
+{
+    return (float)rand() / ((float)RAND_MAX + 1);
 }
 
 static float* MakeRandomPoints( int N )
@@ -22,11 +72,111 @@ static float* MakeRandomPoints( int N )
     float* points = (float*)malloc( N * 2 * sizeof(float) );
     for( int i = 0; i < N; i++ )
     {
-        points[i*2+0] = Random<float>() * 360.0 - 180.0;
-        points[i*2+1] = Random<float>() * 180.0 - 90.0;
+        // NOTE Map as latitude / longitude
+        points[i*2+0] = RandomFloat() * 360.0 - 180.0;
+        points[i*2+1] = RandomFloat() * 180.0 - 90.0;
     }
     return points;
 }
+
+// All the Hilbert ordering routines taken from https://github.com/tidwall/rtree.c
+uint32_t interleave( uint32_t x )
+{
+    x = (x | (x << 8)) & 0x00FF00FF;
+    x = (x | (x << 4)) & 0x0F0F0F0F;
+    x = (x | (x << 2)) & 0x33333333;
+    x = (x | (x << 1)) & 0x55555555;
+    return x;
+}
+
+uint32_t hilbertXYToIndex_logarithmic( uint32_t x, uint32_t y )
+{
+    uint32_t A, B, C, D;
+
+    // Initial prefix scan round, prime with x and y
+    {
+        uint32_t a = x ^ y;
+        uint32_t b = 0xFFFF ^ a;
+        uint32_t c = 0xFFFF ^ (x | y);
+        uint32_t d = x & (y ^ 0xFFFF);
+
+        A = a | (b >> 1);
+        B = (a >> 1) ^ a;
+
+        C = ((c >> 1) ^ (b & (d >> 1))) ^ c;
+        D = ((a & (c >> 1)) ^ (d >> 1)) ^ d;
+    }
+
+    {
+        uint32_t a = A;
+        uint32_t b = B;
+        uint32_t c = C;
+        uint32_t d = D;
+
+        A = ((a & (a >> 2)) ^ (b & (b >> 2)));
+        B = ((a & (b >> 2)) ^ (b & ((a ^ b) >> 2)));
+
+        C ^= ((a & (c >> 2)) ^ (b & (d >> 2)));
+        D ^= ((b & (c >> 2)) ^ ((a ^ b) & (d >> 2)));
+    }
+
+    {
+        uint32_t a = A;
+        uint32_t b = B;
+        uint32_t c = C;
+        uint32_t d = D;
+
+        A = ((a & (a >> 4)) ^ (b & (b >> 4)));
+        B = ((a & (b >> 4)) ^ (b & ((a ^ b) >> 4)));
+
+        C ^= ((a & (c >> 4)) ^ (b & (d >> 4)));
+        D ^= ((b & (c >> 4)) ^ ((a ^ b) & (d >> 4)));
+    }
+
+    // Final round and projection
+    {
+        uint32_t a = A;
+        uint32_t b = B;
+        uint32_t c = C;
+        uint32_t d = D;
+
+        C ^= ((a & (c >> 8)) ^ (b & (d >> 8)));
+        D ^= ((b & (c >> 8)) ^ ((a ^ b) & (d >> 8)));
+    }
+
+    // Undo transformation prefix scan
+    uint32_t a = C ^ (C >> 1);
+    uint32_t b = D ^ (D >> 1);
+
+    // Recover index bits
+    uint32_t i0 = x ^ y;
+    uint32_t i1 = b | (0xFFFF ^ (i0 | a));
+
+    return (interleave(i1) << 1) | interleave(i0);
+}
+
+uint32_t hilbert( float lat, float lon )
+{
+    uint32_t x = ((lon + 180.0) / 360.0) * 0xFFFF;
+    uint32_t y = ((lat + 90.0) / 180.0) * 0xFFFF;
+    return hilbertXYToIndex_logarithmic( x, y );
+}
+
+int HilbertCompare( const void *a, const void *b )
+{
+    float *p1 = (float*)a;
+    float *p2 = (float*)b;
+    uint32_t h1 = hilbert( p1[1] , p1[0] );
+    uint32_t h2 = hilbert( p2[1] , p2[0] );
+
+    return (h1 < h2) ? -1 : ((h1 > h2) ? 1 : 0);
+}
+
+void HilbertSort( float* points, int N )
+{
+    qsort( points, N, sizeof(float) * 2, HilbertCompare );
+}
+
 
 static double g_cyclesPerSecond;
 
@@ -45,12 +195,11 @@ void Bench( char const* name, int N, Callable&& code )
     double elapsed_secs = elapsed_cycles / g_cyclesPerSecond;
     double ns_op = elapsed_secs / (double)N * 1e9;
     int64_t cycles_op = (int64_t)(elapsed_cycles / (double)N);
-    int64_t ops_ms = (int64_t)(N / elapsed_secs / 1000);
 
     char ops_buf[64];
     char secs_buf[64];
-    printf( "%12lld cycles -- %10d ops in %.6f secs %8.1f ns/op %8lld cycles/op %11lld op/ms\n",
-            elapsed_cycles, N, elapsed_secs, ns_op, cycles_op, ops_ms );
+    printf( "%12lld cycles -- %10d ops in %.6f secs   / %8lld cycles/op -- %8.1f ns/op\n",
+            elapsed_cycles, N, elapsed_secs, cycles_op, ns_op );
 }
 
 struct IterateItemCtx
@@ -80,17 +229,28 @@ static bool IterateRegion( const float* min, const float* max, const void* itemD
 }
 
 
-int main()
+// TODO Seems like we may wanna start moving towards more of a "repetition tester" model?
+template <int MaxItems, int MinItems>
+void TestRandomSet( int N, bool hilbertOrdered )
 {
-    constexpr int N = 1'000'000;
+    ClearArena( &globalArena );
 
     // TODO Keep trying out various min/max values
     // NOTE The 10:1 ratio (max:min) seems to be important!
-    RTree<int, 2, 100, 10> tree;
-    printf( "RTree with %d:%d (max:min) configuration\n", tree.MaxItemCount, tree.MinItemCount );
+#if 0
+    RTree<int, 2, MaxItems, MinItems> tree;
+#else
+    RTree<int, 2, MaxItems, MinItems> tree( RTreeAlloc, RTreeFree );
+#endif
+    printf( "\n\nRTree with %d:%d (max:min) configuration\n", tree.MaxItemCount, tree.MinItemCount );
+
     float* points = MakeRandomPoints( N );
+    if( hilbertOrdered )
+        HilbertSort( points, N );
+    printf( "Dataset contains %d points%s\n", N, hilbertOrdered ? " (Hilbert ordered)" : "" );
 
     // Compute cycles per second estimation
+    // NOTE This *shouldnt* vary across tests on modern processors
     using namespace std::chrono;
 
     double elapsed_secs;
@@ -112,11 +272,10 @@ int main()
     printf( "Cycles per second (est.): %.1f\n\n", g_cyclesPerSecond );
 
 
-    // TODO Compare with a linear arena allocator
     // TODO When comparing insertion / packing strats, show a sum of area + perimeter for the whole tree & leaf nodes:
     /* "Our secondary comparison metric is the sum of the area and perimeter of the MBRs of the
     R-tree nodes. These measures are good indicators of the number of nodes accessed by a query [6]
-    but can be misleading if buffering is not considered [8]. We include these measures as additional
+    [...]. We include these measures as additional
     information and present area and perimeter metrics for both the whole tree (summed over all nodes
     at all levels) and also only for the leaf level. We argue that the leaf level metric is of most interest
     since the non-leaf level nodes will likely be buffered." */
@@ -125,7 +284,7 @@ int main()
         float* point = &points[i*2];
 
         tree.Insert( i, point, point );
-        assert( tree.count == i+1 );
+        // assert( tree.count == i+1 );
     } );
 
     // TODO Test searching before and after reallocating all nodes so that depth-first traversing is linear in memory
@@ -143,58 +302,69 @@ int main()
         ctx.data = i;
         ctx.count = 0;
         tree.Search( point, point, IterateItem, &ctx );
-
         // assert( ctx.count == 1 );
     } );
 
-    Bench( "search-area-1%", 1000, [&]( int i )
+
+    int areaSearchCount = N / 1000;
+    float* searchPoints = MakeRandomPoints( areaSearchCount );
+
+    Bench( "search-area-1%", areaSearchCount, [&]( int i )
     {
-        const double p = 0.01;
-        float min[2];
-        float max[2];
-        // TODO Dafuk is rand doing inside the benchmarked code!?
-        min[0] = (float)(Random<double>() * 360.0 - 180.0);
-        min[1] = (float)(Random<double>() * 180.0 - 90.0);
-        max[0] = (float)(min[0] + 360.0 * p);
-        max[1] = (float)(min[1] + 180.0 * p);
+        constexpr double pcnt = 0.01;
+        float *p = &points[i*2];
+        float min[2] = { p[0], p[1] };
+        float max[2] = { (float)(min[0] + 360.0 * pcnt), (float)(min[1] + 180.0 * pcnt) };
+
         int res = 0;
         tree.Search( min, max, IterateRegion, &res );
-
         // printf( "- %d found items\n", res );
     } );
 
-    Bench( "search-area-5%", 1000, [&]( int i )
+    free( searchPoints );
+    searchPoints = MakeRandomPoints( areaSearchCount );
+
+    Bench( "search-area-5%", areaSearchCount, [&]( int i )
     {
-        const double p = 0.05;
-        float min[2];
-        float max[2];
-        // TODO Dafuk is rand doing inside the benchmarked code!?
-        min[0] = (float)(Random<double>() * 360.0 - 180.0);
-        min[1] = (float)(Random<double>() * 180.0 - 90.0);
-        max[0] = (float)(min[0] + 360.0 * p);
-        max[1] = (float)(min[1] + 180.0 * p);
+        constexpr double pcnt = 0.05;
+        float *p = &points[i*2];
+        float min[2] = { p[0], p[1] };
+        float max[2] = { (float)(min[0] + 360.0 * pcnt), (float)(min[1] + 180.0 * pcnt) };
+
         int res = 0;
         tree.Search( min, max, IterateRegion, &res );
-
         // printf( "- %d found items\n", res );
     } );
 
-    Bench( "search-area-10%", 1000, [&]( int i )
+    free( searchPoints );
+    searchPoints = MakeRandomPoints( areaSearchCount );
+
+    Bench( "search-area-10%", areaSearchCount, [&]( int i )
     {
-        const double p = 0.10;
-        float min[2];
-        float max[2];
-        // TODO Dafuk is rand doing inside the benchmarked code!?
-        min[0] = (float)(Random<double>() * 360.0 - 180.0);
-        min[1] = (float)(Random<double>() * 180.0 - 90.0);
-        max[0] = (float)(min[0] + 360.0 * p);
-        max[1] = (float)(min[1] + 180.0 * p);
+        constexpr double pcnt = 0.10;
+        float *p = &points[i*2];
+        float min[2] = { p[0], p[1] };
+        float max[2] = { (float)(min[0] + 360.0 * pcnt), (float)(min[1] + 180.0 * pcnt) };
+
         int res = 0;
         tree.Search( min, max, IterateRegion, &res );
-
         // printf( "- %d found items\n", res );
     } );
 
+    free( searchPoints );
+    free( points );
+}
+
+int main()
+{
+    InitArena( &globalArena, 64 * 1024 * 1024 );
+
+    constexpr int N = 1'000'000;
+
+    TestRandomSet<64, 7>( N, false );
+    TestRandomSet<100, 10>( N, false );
+    TestRandomSet<64, 7>( N, true );
+    TestRandomSet<100, 10>( N, true );
 
     return 0;
 }

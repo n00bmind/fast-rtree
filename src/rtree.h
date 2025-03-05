@@ -13,8 +13,8 @@ namespace fast_rtree
 {
     typedef int32_t s32;
 
-    static void* (*AllocFn)( size_t size );
-    static void  (*FreeFn)( void* memory );
+    using AllocFn = void*( size_t size );
+    using FreeFn =  void( void* memory );
 
     enum NodeKind
     {
@@ -53,21 +53,25 @@ namespace fast_rtree
         };
 
 
+        AllocFn* allocFn;
+        FreeFn* freeFn;
         Node* root;
         Rect rootRect;
         s32 height;
         s32 count;
 
-        RTree()
-            : root( nullptr )
+        RTree( AllocFn* alloc = nullptr, FreeFn* free = nullptr )
+            : allocFn( alloc )
+            , freeFn( free )
+            , root( nullptr )
             , rootRect{}
             , height( 0 )
             , count( 0 )
         {
-            if( !AllocFn || !FreeFn )
+            if( !allocFn || !freeFn )
             {
-                AllocFn = malloc;
-                FreeFn = free;
+                allocFn = malloc;
+                freeFn = free;
             }
         }
 
@@ -77,7 +81,7 @@ namespace fast_rtree
 
     private:
         // TODO Turn as many of these as possible into free funcs (will probably need to extract Node & Rect from the class)
-        static Node* AllocNode( NodeKind kind );
+        Node* AllocNode( NodeKind kind );
 
         int FindBestNode( Node* node, Rect const& rect );
         bool SplitNodeByLargestAxisEdgeSnap( Rect const& rect, Node* node, Node** rightOut );
@@ -122,7 +126,7 @@ namespace fast_rtree
     template <typename ItemData, int Dims, int MaxItems, int MinItems>
     typename RTreeType::Node* RTreeType::AllocNode( NodeKind kind )
     {
-        Node* node = (Node*)AllocFn( sizeof(Node) );
+        Node* node = (Node*)allocFn( sizeof(Node) );
         if( node )
         {
             *node = {};

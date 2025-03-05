@@ -10,8 +10,9 @@ set REL_FLAGS=-DCONFIG_RELEASE=1 -Z7 -MT -O2 -GL
 set CC=cl
 set CFG_FLAGS=%DBG_FLAGS%
 if "%1" == "release" (
-    set CC=clang-cl
     set CFG_FLAGS=%REL_FLAGS%
+    :: Use clang-cl if found
+    clang-cl >nul 2>nul && set CC=clang-cl
 )
 
 REM %CC% /nologo ../src/test.cpp %COMMON_FLAGS% %CFG_FLAGS% /link /incremental:no /debug:full /LTCG
